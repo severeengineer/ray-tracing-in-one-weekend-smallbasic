@@ -5,6 +5,14 @@ REM created: 07/11/2023
 ' or math.Inf, so we use 2^24 for now
 infinity = 16777216
 
+' seed the RNG to get deterministic output
+randomize 42
+
+' render settings
+aspectRatio = 16.0 / 9.0
+imgWidth = 400
+samplesPerPixel = 5
+
 func makeVec3(x, y, z)
   local vec = {}
   vec.x = x
@@ -104,13 +112,23 @@ func makeInterval(start, finish)
   interval.start = start
   interval.finish = finish
   func contains(x)
-    return interval.start <= x and x <= interval.finish
+    return self.start <= x and x <= self.finish
   end
   interval.contains = @contains
   func surrounds(x)
-    return interval.start < x and x <= interval.finish
+    return self.start < x and x <= self.finish
   end
   interval.surrounds = @surrounds
+  func clamp(x)
+    if x < self.start then
+      return self.start
+    endif
+    if x > self.finish then
+      return self.finish
+    endif
+    return x
+  end
+  interval.clamp = @clamp
   return interval
 end
  
@@ -176,20 +194,35 @@ end
 
 func makePixel(r, g, b)
   local pixel = {}
-  ' note that we use 255 here instead of the original 255.999
-  ' I noticed this was producing blue values of 256 for the
-  ' final output of section 4, which GIMP's PPM parser treats
-  ' as 0, making the output green, not blue 
-  pixel.r = round(r * 255)
-  pixel.g = round(g * 255)
-  pixel.b = round(b * 255)
+  pixel.r = r
+  pixel.g = g
+  pixel.b = b
+  func add(p)
+    return makePixel(self.r + p.r, self.g + p.g, self.b + p.b)
+  end
+  pixel.add = @add
+  func mulScalar(s)
+    return makePixel(self.r * s, self.g * s, self.b *s) 
+  end
+  pixel.mulScalar = @mulScalar
+  func reclamp()
+    ' note that we use 255 here instead of the original 255.999
+    ' I noticed this was producing blue values of 256 for the
+    ' final output of section 4, which GIMP's PPM parser treats
+    ' as 0, making the output green, not blue
+    local intensity = makeInterval(0.0, 0.999)
+    return makePixel(round(intensity.clamp(self.r) * 255), round(intensity.clamp(self.g) * 255), round(intensity.clamp(self.b) * 255))
+  end
+  pixel.reclamp = @reclamp
   return pixel
 end
 
-func makeCamera(aspectRatio, imgWidth)
+func makeCamera(aspectRatio, imgWidth, samplesPerPixel)
   local camera = {}
   camera.aspectRatio = aspectRatio
   camera.imgWidth = imgWidth
+  camera.samplesPerPixel = samplesPerPixel
+  camera.pixelSampleScale = 1 / camera.samplesPerPixel
   local imgHeight = round(camera.imgWidth / camera.aspectRatio)
   if imgHeight < 1 then
     imgHeight = 1
@@ -244,16 +277,29 @@ func makeCamera(aspectRatio, imgWidth)
         print "scanlines remaining: "; dimensions.y - y
       endif
       for x = 0 to dimensions.x - 1
-        local pixelCenter = self.pixel00Loc.plus(self.pixelDeltaU.mulScalar(x)).plus(self.pixelDeltaV.mulScalar(y))
-        local rayDirection = pixelCenter.minus(self.center)
-        local r = makeRay(self.center, rayDirection)
-        local c = self.rayColor(r, world)
+        local c = makePixel(0, 0, 0)
+        for s = 0 to self.samplesPerPixel - 1
+          local r = self.getSampleRay(x, y)
+          local sample = self.rayColor(r, world)
+          c = c.add(sample)
+        next s
+        c = c.mulScalar(self.pixelSampleScale)
+        c = c.reclamp()
         append imgData, c
       next x
     next y
     return imgData
   end
   camera.render = @render
+  func getSampleRay(x, y)
+    local offset = makeVec3(rnd() - 0.5, rnd() - 0.5, 0)
+    local deltaUOffset = self.pixelDeltaU.mulScalar(offset.x + x)
+    local deltaVOffset = self.pixelDeltaV.mulScalar(offset.y + y)
+    local pixelSample = self.pixel00Loc.plus(deltaUOffset).plus(deltaVOffset)
+    local rayDirection = pixelSample.minus(self.center)
+    return makeRay(self.center, rayDirection)
+  end
+  camera.getSampleRay = @getSampleRay
   return camera
 end
 
@@ -275,9 +321,6 @@ func writePPMImage(imgPath, imgWidth, imgHeight, imgData)
   close #imgFile
 end
 
-aspectRatio = 16.0 / 9.0
-imgWidth = 400
-
 world = makeHittableList()
 mainSphere = makeSphere(makeVec3(0, 0, -1), 0.5)
 append world.objects, mainSphere
@@ -285,7 +328,7 @@ ground = makeSphere(makeVec3(0, -100.5, -1), 100)
 append world.objects, ground
 
 preRenderTicks = ticks()
-camera = makeCamera(aspectRatio, imgWidth)
+camera = makeCamera(aspectRatio, imgWidth, samplesPerPixel)
 imgData = camera.render(world)
 writePPMImage("output.ppm", camera.imgWidth, camera.imgHeight, imgData)
 postRenderTicks = ticks()
