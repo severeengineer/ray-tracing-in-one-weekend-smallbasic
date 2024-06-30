@@ -174,26 +174,6 @@ func makeHittableList()
   return hittableList
 end
 
-func rayColor(ray, world)
-  local hitRecord = makeHitRecord()
-  if world.hit(ray, makeInterval(0, infinity), hitRecord) = true then
-    local hitColor = makeVec3(1.0, 1.0, 1.0)
-    hitColor = hitColor.plus(hitRecord.normal).mulScalar(0.5)
-    return makePixel(hitColor.x, hitColor.y, hitColor.z)
-  endif
-  local unitDirection = ray.direction.unitVec()
-  local a = 0.5 * (unitDirection.y + 1.0)
-  ' local ... = makeVec3(...).mulScalar() seems to be invalid
-  ' smallbasic, so unfortunately we have to be a lot more
-  ' verbose than the c++ original here
-  local vp = makeVec3(1.0, 1.0, 1.0)
-  vp = vp.mulScalar(1.0 - a)
-  local vp2 = makeVec3(0.5, 0.7, 1.0)
-  vp2 = vp2.mulScalar(a)
-  vp = vp.plus(vp2)
-  return makePixel(vp.x, vp.y, vp.z)
-end
-
 func makePixel(r, g, b)
   local pixel = {}
   ' note that we use 255 here instead of the original 255.999
@@ -206,12 +186,83 @@ func makePixel(r, g, b)
   return pixel
 end
 
-func writePPMImage(imgPath, imgDim, imgData)
+func makeCamera(aspectRatio, imgWidth)
+  local camera = {}
+  camera.aspectRatio = aspectRatio
+  camera.imgWidth = imgWidth
+  local imgHeight = round(camera.imgWidth / camera.aspectRatio)
+  if imgHeight < 1 then
+    imgHeight = 1
+  endif
+  camera.imgHeight = imgHeight
+  local focalLength = 1.0
+  local viewportHeight = 2.0
+  local viewportWidth = viewportHeight * (camera.imgWidth / camera.imgHeight)
+  camera.center = makeVec3(0.0, 0.0, 0.0)
+  
+  local viewportU = makeVec3(viewportWidth, 0.0, 0.0)
+  viewportV = makeVec3(0.0, -viewportHeight, 0.0)
+  
+  camera.pixelDeltaU = viewportU.divScalar(camera.imgWidth)
+  camera.pixelDeltaV = viewportV.divScalar(camera.imgHeight)
+  
+  local viewportUpperLeft = camera.center.minus(makeVec3(0.0, 0.0, focalLength))
+  viewportUpperLeft = viewportUpperLeft.minus(viewportU.divScalar(2.0))
+  viewportUpperLeft = viewportUpperLeft.minus(viewportV.divScalar(2.0))
+  
+  camera.pixel00Loc = viewportUpperLeft.plus(pixelDeltaU.plus(pixelDeltaV).mulScalar(0.5))
+  
+  func rayColor(ray, world)
+    local hitRecord = makeHitRecord()
+    if world.hit(ray, makeInterval(0, infinity), hitRecord) = true then
+      local hitColor = makeVec3(1.0, 1.0, 1.0)
+      hitColor = hitColor.plus(hitRecord.normal).mulScalar(0.5)
+      return makePixel(hitColor.x, hitColor.y, hitColor.z)
+    endif
+    local unitDirection = ray.direction.unitVec()
+    local a = 0.5 * (unitDirection.y + 1.0)
+    ' local ... = makeVec3(...).mulScalar() seems to be invalid
+    ' smallbasic, so unfortunately we have to be a lot more
+    ' verbose than the c++ original here
+    local vp = makeVec3(1.0, 1.0, 1.0)
+    vp = vp.mulScalar(1.0 - a)
+    local vp2 = makeVec3(0.5, 0.7, 1.0)
+    vp2 = vp2.mulScalar(a)
+    vp = vp.plus(vp2)
+    return makePixel(vp.x, vp.y, vp.z)
+  end
+  camera.rayColor = @rayColor
+  func render(world)
+    local dimensions = {}
+    dimensions.x = self.imgWidth
+    dimensions.y = self.imgHeight
+    dim imgData
+    for y = 0 to dimensions.y - 1
+      ' status update every 10 lines (next best thing since smallbasic seems
+      ' to lack a \r equivalent)
+      if (dimensions.y - y) % 10 = 0 then
+        print "scanlines remaining: "; dimensions.y - y
+      endif
+      for x = 0 to dimensions.x - 1
+        local pixelCenter = self.pixel00Loc.plus(self.pixelDeltaU.mulScalar(x)).plus(self.pixelDeltaV.mulScalar(y))
+        local rayDirection = pixelCenter.minus(self.center)
+        local r = makeRay(self.center, rayDirection)
+        local c = self.rayColor(r, world)
+        append imgData, c
+      next x
+    next y
+    return imgData
+  end
+  camera.render = @render
+  return camera
+end
+
+func writePPMImage(imgPath, imgWidth, imgHeight, imgData)
   local imgFile = freefile()
   open imgPath for output as #imgFile
   ' print PPM header
   print #imgFile, "P3"
-  print #imgFile, imgDim.x; " "; imgDim.y
+  print #imgFile, imgWidth; " "; imgHeight
   print #imgFile, 255
   ' print image data
   for i = 0 to len(imgData) - 1
@@ -226,10 +277,6 @@ end
 
 aspectRatio = 16.0 / 9.0
 imgWidth = 400
-imgHeight = round(imgWidth / aspectRatio)
-if imgHeight < 1 then
-  imgHeight = 1
-endif
 
 world = makeHittableList()
 mainSphere = makeSphere(makeVec3(0, 0, -1), 0.5)
@@ -237,42 +284,9 @@ append world.objects, mainSphere
 ground = makeSphere(makeVec3(0, -100.5, -1), 100)
 append world.objects, ground
 
-focalLength = 1.0
-viewportHeight = 2.0
-viewportWidth = viewportHeight * (imgWidth / imgHeight)
-cameraCenter = makeVec3(0.0, 0.0, 0.0)
-
-viewportU = makeVec3(viewportWidth, 0.0, 0.0)
-viewportV = makeVec3(0.0, -viewportHeight, 0.0)
-
-pixelDeltaU = viewportU.divScalar(imgWidth)
-pixelDeltaV = viewportV.divScalar(imgHeight)
-
-viewportUpperLeft = cameraCenter.minus(makeVec3(0.0, 0.0, focalLength))
-viewportUpperLeft = viewportUpperLeft.minus(viewportU.divScalar(2.0))
-viewportUpperLeft = viewportUpperLeft.minus(viewportV.divScalar(2.0))
-
-pixel00Loc = viewportUpperLeft.plus(pixelDeltaU.plus(pixelDeltaV).mulScalar(0.5))
-
-dimensions = {}
-dimensions.x = imgWidth
-dimensions.y = imgHeight
-dim imgData
 preRenderTicks = ticks()
-for y = 0 to dimensions.y - 1
-  ' status update every 10 lines (next best thing since smallbasic seems
-  ' to lack a \r equivalent)
-  if (dimensions.y - y) % 10 = 0 then
-    print "scanlines remaining: "; dimensions.y - y
-  endif
-  for x = 0 to dimensions.x - 1
-     local pixelCenter = pixel00Loc.plus(pixelDeltaU.mulScalar(x)).plus(pixelDeltaV.mulScalar(y))
-     local rayDirection = pixelCenter.minus(cameraCenter)
-     local r = makeRay(cameraCenter, rayDirection)
-     local c = rayColor(r, world)
-     append imgData, c
-  next x
-next y
-writePPMImage("output.ppm", dimensions, imgData)
+camera = makeCamera(aspectRatio, imgWidth)
+imgData = camera.render(world)
+writePPMImage("output.ppm", camera.imgWidth, camera.imgHeight, imgData)
 postRenderTicks = ticks()
 print "render completed in: "; (postRenderTicks - preRenderTicks) / 1000; " seconds"
