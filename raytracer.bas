@@ -12,6 +12,11 @@ randomize 42
 aspectRatio = 16.0 / 9.0
 imgWidth = 400
 samplesPerPixel = 5
+maxBounces = 50
+
+func rndRange(start, finish)
+  return start + (finish-start) * rnd()
+end
 
 func makeVec3(x, y, z)
   local vec = {}
@@ -72,6 +77,29 @@ func makeVec3(x, y, z)
   end
   vec.cross = @cross
   return vec
+end
+
+func makeRandVec3(start, finish)
+  return makeVec3(rndRange(start, finish), rndRange(start, finish), rndRange(start, finish))
+end
+
+func randomInUnitSphere()
+  while true
+    local p = makeRandVec3(-1, 1)
+    if p.lengthSquared() < 1 then
+      return p
+    endif
+  wend
+end
+
+func randomOnHemisphere(normal)
+  local onSphere = randomInUnitSphere()
+  onSphere = onSphere.unitVec()
+  if onSphere.dot(normal) > 0 then
+    return onSphere
+  else
+    return onSphere.neg()
+  endif
 end
 
 func makeRay(origin, direction)
@@ -217,12 +245,13 @@ func makePixel(r, g, b)
   return pixel
 end
 
-func makeCamera(aspectRatio, imgWidth, samplesPerPixel)
+func makeCamera(aspectRatio, imgWidth, samplesPerPixel, maxBounces)
   local camera = {}
   camera.aspectRatio = aspectRatio
   camera.imgWidth = imgWidth
   camera.samplesPerPixel = samplesPerPixel
   camera.pixelSampleScale = 1 / camera.samplesPerPixel
+  camera.maxBounces = maxBounces
   local imgHeight = round(camera.imgWidth / camera.aspectRatio)
   if imgHeight < 1 then
     imgHeight = 1
@@ -245,11 +274,17 @@ func makeCamera(aspectRatio, imgWidth, samplesPerPixel)
   
   camera.pixel00Loc = viewportUpperLeft.plus(pixelDeltaU.plus(pixelDeltaV).mulScalar(0.5))
   
-  func rayColor(ray, world)
+  func rayColor(ray, bouncesLeft, world)
+    if bouncesLeft <= 0 then
+      return makePixel(0, 0, 0)
+    endif
     local hitRecord = makeHitRecord()
-    if world.hit(ray, makeInterval(0, infinity), hitRecord) = true then
-      local hitColor = makeVec3(1.0, 1.0, 1.0)
-      hitColor = hitColor.plus(hitRecord.normal).mulScalar(0.5)
+    if world.hit(ray, makeInterval(0.001, infinity), hitRecord) = true then
+      local direction = randomOnHemisphere(hitRecord.normal)
+      local hitColor = makeVec3(0.5, 0.5, 0.5)
+      local bounceColor = self.rayColor(makeRay(hitRecord.p, direction), bouncesLeft-1, world)
+      ' TODO: add mul to pixel implementation to remove the need to call makeVec3
+      hitColor = hitColor.mul(makeVec3(bounceColor.r, bounceColor.g, bounceColor.b))
       return makePixel(hitColor.x, hitColor.y, hitColor.z)
     endif
     local unitDirection = ray.direction.unitVec()
@@ -280,7 +315,7 @@ func makeCamera(aspectRatio, imgWidth, samplesPerPixel)
         local c = makePixel(0, 0, 0)
         for s = 0 to self.samplesPerPixel - 1
           local r = self.getSampleRay(x, y)
-          local sample = self.rayColor(r, world)
+          local sample = self.rayColor(r, self.maxBounces, world)
           c = c.add(sample)
         next s
         c = c.mulScalar(self.pixelSampleScale)
@@ -328,7 +363,7 @@ ground = makeSphere(makeVec3(0, -100.5, -1), 100)
 append world.objects, ground
 
 preRenderTicks = ticks()
-camera = makeCamera(aspectRatio, imgWidth, samplesPerPixel)
+camera = makeCamera(aspectRatio, imgWidth, samplesPerPixel, maxBounces)
 imgData = camera.render(world)
 writePPMImage("output.ppm", camera.imgWidth, camera.imgHeight, imgData)
 postRenderTicks = ticks()
